@@ -9,6 +9,7 @@ import whois
 
 
 TIMEOUT = 10
+
 VT_BASE_URL = "https://www.virustotal.com/api/v3"
 
 
@@ -111,7 +112,10 @@ def _serialize(value):
         return [_serialize(v) for v in value]
 
     if isinstance(value, dict):
-        return {str(k): _serialize(v) for k, v in value.items()}
+        return {
+            str(k): _serialize(v)
+            for k, v in value.items()
+        }
 
     return value
 
@@ -135,17 +139,23 @@ def check_virustotal(target, target_type):
 
     try:
         if target_type == "ip":
-            endpoint = f"{VT_BASE_URL}/ip_addresses/{target}"
+            endpoint = (
+                f"{VT_BASE_URL}/ip_addresses/{target}"
+            )
 
         elif target_type == "domain":
-            endpoint = f"{VT_BASE_URL}/domains/{target}"
+            endpoint = (
+                f"{VT_BASE_URL}/domains/{target}"
+            )
 
         elif target_type == "url":
             encoded = base64.urlsafe_b64encode(
                 target.encode()
             ).decode().rstrip("=")
 
-            endpoint = f"{VT_BASE_URL}/urls/{encoded}"
+            endpoint = (
+                f"{VT_BASE_URL}/urls/{encoded}"
+            )
 
         else:
             return make_result(
@@ -166,7 +176,10 @@ def check_virustotal(target, target_type):
                 "virustotal",
                 status="error",
                 verdict="unknown",
-                error="VirusTotal authentication or permission error.",
+                error=(
+                    "VirusTotal authentication or "
+                    "permission error."
+                ),
             )
 
         if response.status_code == 404:
@@ -174,7 +187,10 @@ def check_virustotal(target, target_type):
                 "virustotal",
                 status="success",
                 verdict="unknown",
-                summary="VirusTotal has no existing report for this target.",
+                summary=(
+                    "VirusTotal has no existing report "
+                    "for this target."
+                ),
             )
 
         if response.status_code == 429:
@@ -199,8 +215,13 @@ def check_virustotal(target, target_type):
             {},
         )
 
-        malicious = int(stats.get("malicious", 0))
-        suspicious = int(stats.get("suspicious", 0))
+        malicious = int(
+            stats.get("malicious", 0)
+        )
+
+        suspicious = int(
+            stats.get("suspicious", 0)
+        )
 
         if malicious > 0:
             verdict = "malicious"
@@ -210,7 +231,9 @@ def check_virustotal(target, target_type):
             verdict = "safe"
 
         data = {
-            "reputation": attributes.get("reputation"),
+            "reputation": attributes.get(
+                "reputation"
+            ),
             "analysis_stats": stats,
         }
 
@@ -252,7 +275,10 @@ def check_virustotal(target, target_type):
 
 
 def check_whois(target, target_type):
-    hostname = _hostname(target, target_type)
+    hostname = _hostname(
+        target,
+        target_type,
+    )
 
     if not hostname:
         return make_result(
@@ -267,19 +293,34 @@ def check_whois(target, target_type):
 
         data = {
             "domain": hostname,
-            "registrar": _serialize(result.get("registrar")),
-            "creation_date": _serialize(result.get("creation_date")),
-            "expiration_date": _serialize(result.get("expiration_date")),
-            "updated_date": _serialize(result.get("updated_date")),
-            "name_servers": _serialize(result.get("name_servers")),
-            "status": _serialize(result.get("status")),
+            "registrar": _serialize(
+                result.get("registrar")
+            ),
+            "creation_date": _serialize(
+                result.get("creation_date")
+            ),
+            "expiration_date": _serialize(
+                result.get("expiration_date")
+            ),
+            "updated_date": _serialize(
+                result.get("updated_date")
+            ),
+            "name_servers": _serialize(
+                result.get("name_servers")
+            ),
+            "status": _serialize(
+                result.get("status")
+            ),
         }
 
         return make_result(
             "whois",
             status="success",
             verdict="unknown",
-            summary="WHOIS registration information retrieved.",
+            summary=(
+                "WHOIS registration information "
+                "retrieved."
+            ),
             data=data,
         )
 
@@ -288,7 +329,10 @@ def check_whois(target, target_type):
             "whois",
             status="unavailable",
             verdict="unknown",
-            summary="WHOIS information could not be retrieved.",
+            summary=(
+                "WHOIS information could not "
+                "be retrieved."
+            ),
             error=str(exc),
         )
 
