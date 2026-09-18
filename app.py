@@ -2,6 +2,7 @@ import json
 import os
 
 import streamlit as st
+from groq import Groq
 
 from sources import (
     SOURCE_REGISTRY,
@@ -17,6 +18,13 @@ VERDICT_PRIORITY = {
     "suspicious": 3,
     "malicious": 4,
 }
+
+
+def get_secret(name):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return os.getenv(name)
 
 
 def calculate_overall_verdict(results):
@@ -45,6 +53,7 @@ def run_scan(target, target_type):
                 target,
                 target_type,
             )
+
         except Exception as exc:
             result = {
                 "source": source_name,
@@ -60,7 +69,7 @@ def run_scan(target, target_type):
     return results
 
 
-def build_gemini_prompt(
+def build_ai_prompt(
     target,
     target_type,
     knowledge_level,
@@ -75,7 +84,8 @@ Analyze ONLY the supplied scan results.
 Do not invent facts.
 Do not assume missing information.
 Do not claim a target is guaranteed safe.
-WHOIS information is contextual and is not proof that a target is safe.
+WHOIS information is contextual and is not proof
+that a target is safe.
 
 Target:
 {target}
@@ -109,22 +119,20 @@ def get_ai_insight(
     results,
     overall_verdict,
 ):
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_secret("GROQ_API_KEY")
 
     if not api_key:
         return (
-            "Gemini is unavailable because "
-            "GEMINI_API_KEY is not configured."
+            "AI analysis is unavailable because "
+            "GROQ_API_KEY is not configured."
         )
 
     try:
-        from google import genai
-
-        client = genai.Client(
+        client = Groq(
             api_key=api_key
         )
 
-        prompt = build_gemini_prompt(
+        prompt = build_ai_prompt(
             target,
             target_type,
             knowledge_level,
@@ -132,15 +140,28 @@ def get_ai_insight(
             overall_verdict,
         )
 
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model="openai/gpt-oss-120b",
-            contents=prompt,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a cybersecurity "
+                        "analysis assistant."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            temperature=0.2,
         )
 
-        return response.text
+        return response.choices[0].message.content
 
     except Exception as exc:
-        return f"Gemini error: {exc}"
+        return f"AI analysis error: {exc}"
 
 
 def render_result(result):
@@ -172,6 +193,7 @@ def main():
     )
 
     st.title("🛡️ ThreatLens")
+
     st.caption(
         "IP, domain, and URL safety analysis"
     )
@@ -199,7 +221,10 @@ def main():
         return
 
     normalized = normalize_target(target)
-    target_type = detect_target_type(target)
+
+    target_type = detect_target_type(
+        target
+    )
 
     valid, error = validate_target(
         normalized,
@@ -214,9 +239,11 @@ def main():
         f"Detected type: **{target_type}**"
     )
 
-    with st.spinner("Running intelligence sources..."):
+    with st.spinner(
+        "Running intelligence sources..."
+    ):
         results = run_scan(
-            target,
+            normalized,
             target_type,
         )
 
@@ -235,11 +262,13 @@ def main():
 
     st.divider()
 
-    st.header("🤖 Gemini Analysis")
+    st.header("🤖 AI Analysis")
 
-    with st.spinner("Preparing analysis..."):
+    with st.spinner(
+        "Preparing AI analysis..."
+    ):
         insight = get_ai_insight(
-            target,
+            normalized,
             target_type,
             knowledge_level,
             results,
