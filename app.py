@@ -12,27 +12,64 @@ from sources import (
 )
 
 
+# ============================================================
+# ThreatLens
+# Cybersecurity IP / Domain / URL Analysis
+# ============================================================
+
+APP_NAME = "ThreatLens"
+AI_MODEL = "openai/gpt-oss-120b"
+
+
+# ============================================================
+# Verdict Configuration
+# ============================================================
+
+# Only actual threat verdicts are included here.
+# WHOIS returns "unknown" because WHOIS is contextual data,
+# so it should NOT override a VirusTotal verdict.
+
 VERDICT_PRIORITY = {
     "safe": 1,
-    "unknown": 2,
-    "suspicious": 3,
-    "malicious": 4,
+    "suspicious": 2,
+    "malicious": 3,
 }
 
 
+# ============================================================
+# Secret Helper
+# ============================================================
+
 def get_secret(name):
+    """
+    Read a secret from Streamlit Secrets first.
+    Fall back to environment variables if necessary.
+    """
+
     try:
         return st.secrets[name]
     except Exception:
         return os.getenv(name)
 
 
+# ============================================================
+# Overall Verdict
+# ============================================================
+
 def calculate_overall_verdict(results):
+    """
+    Calculate the overall threat verdict.
+
+    Only safe, suspicious, and malicious are considered.
+    Source results with unknown/unavailable verdicts do not
+    override an actual threat verdict.
+    """
+
     verdicts = [
-        result["verdict"]
+        result.get("verdict")
         for result in results
-        if result["status"] == "success"
-        and result["verdict"] in VERDICT_PRIORITY
+        if result.get("status") == "success"
+        and result.get("verdict") in VERDICT_PRIORITY
     ]
 
     if not verdicts:
@@ -44,10 +81,19 @@ def calculate_overall_verdict(results):
     )
 
 
+# ============================================================
+# Run Intelligence Sources
+# ============================================================
+
 def run_scan(target, target_type):
+    """
+    Run all registered intelligence sources.
+    """
+
     results = []
 
     for source_name, source_function in SOURCE_REGISTRY.items():
+
         try:
             result = source_function(
                 target,
@@ -55,6 +101,7 @@ def run_scan(target, target_type):
             )
 
         except Exception as exc:
+
             result = {
                 "source": source_name,
                 "status": "error",
@@ -64,10 +111,18 @@ def run_scan(target, target_type):
                 "error": str(exc),
             }
 
+        # Make sure the source name is always present.
+        if not result.get("source"):
+            result["source"] = source_name
+
         results.append(result)
 
     return results
 
+
+# ============================================================
+# AI Prompt
+# ============================================================
 
 def build_ai_prompt(
     target,
@@ -76,31 +131,55 @@ def build_ai_prompt(
     results,
     overall_verdict,
 ):
+    """
+    Create a controlled prompt for the AI model.
+
+    The AI is instructed not to invent information.
+    """
+
+    scan_data = json.dumps(
+        results,
+        indent=2,
+        default=str,
+    )
+
     return f"""
 You are the ThreatLens cybersecurity analysis assistant.
 
-Analyze ONLY the supplied scan results.
+Your job is to explain the supplied cybersecurity scan
+results clearly and accurately.
 
-Do not invent facts.
-Do not assume missing information.
-Do not claim a target is guaranteed safe.
-WHOIS information is contextual and is not proof
-that a target is safe.
+IMPORTANT RULES:
+
+1. Analyze ONLY the supplied scan results.
+2. Do NOT invent facts.
+3. Do NOT assume missing information.
+4. Do NOT claim a target is guaranteed safe.
+5. WHOIS information is contextual and is NOT proof
+   that a target is safe or malicious.
+6. The deterministic overall verdict is:
+   {overall_verdict}
+7. Do not change the deterministic verdict.
+8. If a source is unavailable, clearly mention that.
+9. Keep the explanation concise and useful.
+10. Do not recommend illegal or unauthorized activity.
+11. Do not suggest active scanning unless the user has
+    proper authorization.
 
 Target:
 {target}
 
-Detected type:
+Detected target type:
 {target_type}
 
-Knowledge level:
+User knowledge level:
 {knowledge_level}
 
 Deterministic overall verdict:
 {overall_verdict}
 
 Source results:
-{json.dumps(results, indent=2, default=str)}
+{scan_data}
 
 Return exactly these sections:
 
@@ -112,6 +191,10 @@ Recommended Next Step
 """
 
 
+# ============================================================
+# AI Analysis
+# ============================================================
+
 def get_ai_insight(
     target,
     target_type,
@@ -119,35 +202,42 @@ def get_ai_insight(
     results,
     overall_verdict,
 ):
+    """
+    Generate cybersecurity explanation using Groq.
+    """
+
     api_key = get_secret("GROQ_API_KEY")
 
     if not api_key:
+
         return (
             "AI analysis is unavailable because "
             "GROQ_API_KEY is not configured."
         )
 
     try:
+
         client = Groq(
             api_key=api_key
         )
 
         prompt = build_ai_prompt(
-            target,
-            target_type,
-            knowledge_level,
-            results,
-            overall_verdict,
+            target=target,
+            target_type=target_type,
+            knowledge_level=knowledge_level,
+            results=results,
+            overall_verdict=overall_verdict,
         )
 
         response = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model=AI_MODEL,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a cybersecurity "
-                        "analysis assistant."
+                        "You are a careful cybersecurity "
+                        "analysis assistant. "
+                        "Use only the provided scan data."
                     ),
                 },
                 {
@@ -158,73 +248,233 @@ def get_ai_insight(
             temperature=0.2,
         )
 
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+
+        if not content:
+            return "AI returned an empty response."
+
+        return content
 
     except Exception as exc:
-        return f"AI analysis error: {exc}"
 
+        return (
+            "AI analysis error: "
+            f"{exc}"
+        )
+
+
+# ============================================================
+# Verdict Display
+# ============================================================
+
+def display_verdict(verdict):
+    """
+    Display a clear verdict message.
+    """
+
+    if verdict == "malicious":
+
+        st.error(
+            "🚨 MALICIOUS — Threat indicators were detected."
+        )
+
+    elif verdict == "suspicious":
+
+        st.warning(
+            "⚠️ SUSPICIOUS — Some threat indicators were detected."
+        )
+
+    elif verdict == "safe":
+
+        st.success(
+            "✅ SAFE — No malicious or suspicious detections "
+            "were reported by the available threat source."
+        )
+
+    else:
+
+        st.info(
+            "ℹ️ UNKNOWN — There is not enough successful "
+            "threat intelligence to determine a verdict."
+        )
+
+
+# ============================================================
+# Render Source Result
+# ============================================================
 
 def render_result(result):
-    source = result["source"]
-    status = result["status"]
-    verdict = result["verdict"]
 
-    st.subheader(source.title())
+    source = result.get(
+        "source",
+        "Unknown Source",
+    )
 
-    st.write(f"Status: **{status}**")
-    st.write(f"Verdict: **{verdict}**")
+    status = result.get(
+        "status",
+        "unknown",
+    )
 
-    if result.get("summary"):
-        st.write(result["summary"])
+    verdict = result.get(
+        "verdict",
+        "unknown",
+    )
 
-    if result.get("error"):
-        st.warning(result["error"])
+    summary = result.get(
+        "summary",
+        "",
+    )
 
-    if result.get("data"):
-        with st.expander("Source data"):
-            st.json(result["data"])
+    error = result.get(
+        "error",
+        "",
+    )
 
+    data = result.get(
+        "data",
+        {},
+    )
+
+    st.subheader(
+        f"🔹 {source.title()}"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(
+            f"**Status:** {status}"
+        )
+
+    with col2:
+        st.write(
+            f"**Verdict:** {verdict}"
+        )
+
+    if summary:
+        st.write(summary)
+
+    if error:
+        st.warning(error)
+
+    if data:
+
+        with st.expander(
+            "View source data"
+        ):
+            st.json(data)
+
+
+# ============================================================
+# Main Application
+# ============================================================
 
 def main():
+
+    # --------------------------------------------------------
+    # Page Configuration
+    # --------------------------------------------------------
+
     st.set_page_config(
         page_title="ThreatLens",
         page_icon="🛡️",
         layout="wide",
+        initial_sidebar_state="expanded",
     )
+
+    # --------------------------------------------------------
+    # Header
+    # --------------------------------------------------------
 
     st.title("🛡️ ThreatLens")
 
     st.caption(
-        "IP, domain, and URL safety analysis"
+        "Cybersecurity intelligence for IP addresses, "
+        "domains, and URLs"
     )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # Sidebar
+    # --------------------------------------------------------
+
+    with st.sidebar:
+
+        st.header("⚙️ Scan Settings")
+
+        knowledge_level = st.selectbox(
+            "Knowledge level",
+            [
+                "Beginner",
+                "Intermediate",
+                "Expert",
+            ],
+        )
+
+        st.divider()
+
+        st.markdown(
+            """
+### ThreatLens
+
+ThreatLens combines deterministic threat intelligence
+with AI-assisted explanation.
+
+**Sources**
+- VirusTotal
+- WHOIS
+
+**Supported targets**
+- IP addresses
+- Domains
+- URLs
+"""
+        )
+
+    # --------------------------------------------------------
+    # Target Input
+    # --------------------------------------------------------
 
     target = st.text_input(
-        "Enter an IP address, domain, or URL",
-        placeholder="example.com",
-    )
-
-    knowledge_level = st.selectbox(
-        "Knowledge level",
-        [
-            "Beginner",
-            "Intermediate",
-            "Expert",
-        ],
+        "🎯 Enter an IP address, domain, or URL",
+        placeholder="example.com or 8.8.8.8",
     )
 
     scan = st.button(
-        "🔎 Scan",
+        "🔎 Scan Target",
         type="primary",
+        use_container_width=True,
     )
 
+    # --------------------------------------------------------
+    # Stop if Scan Not Requested
+    # --------------------------------------------------------
+
     if not scan:
+        st.info(
+            "Enter a target above and click "
+            "**Scan Target** to begin."
+        )
         return
 
-    normalized = normalize_target(target)
+    # --------------------------------------------------------
+    # Normalize Target
+    # --------------------------------------------------------
 
+    normalized = normalize_target(
+        target
+    )
+
+    # Detect type using original target so URLs
+    # remain identifiable as URLs.
     target_type = detect_target_type(
         target
     )
+
+    # --------------------------------------------------------
+    # Validate
+    # --------------------------------------------------------
 
     valid, error = validate_target(
         normalized,
@@ -232,20 +482,38 @@ def main():
     )
 
     if not valid:
-        st.error(error)
+
+        st.error(
+            f"❌ {error}"
+        )
+
         return
 
+    # --------------------------------------------------------
+    # Target Information
+    # --------------------------------------------------------
+
     st.info(
-        f"Detected type: **{target_type}**"
+        f"**Detected type:** `{target_type}`  \n"
+        f"**Normalized target:** `{normalized}`"
     )
 
+    # --------------------------------------------------------
+    # Run Scan
+    # --------------------------------------------------------
+
     with st.spinner(
-        "Running intelligence sources..."
+        "🔍 Running threat intelligence sources..."
     ):
+
         results = run_scan(
             normalized,
             target_type,
         )
+
+    # --------------------------------------------------------
+    # Overall Verdict
+    # --------------------------------------------------------
 
     overall = calculate_overall_verdict(
         results
@@ -254,29 +522,70 @@ def main():
     st.divider()
 
     st.header(
-        f"Overall verdict: {overall.upper()}"
+        f"Overall Verdict: {overall.upper()}"
     )
 
-    for result in results:
-        render_result(result)
+    display_verdict(
+        overall
+    )
+
+    # --------------------------------------------------------
+    # Source Results
+    # --------------------------------------------------------
 
     st.divider()
 
-    st.header("🤖 AI Analysis")
+    st.header(
+        "📊 Intelligence Sources"
+    )
+
+    for result in results:
+
+        render_result(
+            result
+        )
+
+    # --------------------------------------------------------
+    # AI Analysis
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.header(
+        "🤖 AI Security Analysis"
+    )
 
     with st.spinner(
         "Preparing AI analysis..."
     ):
+
         insight = get_ai_insight(
-            normalized,
-            target_type,
-            knowledge_level,
-            results,
-            overall,
+            target=normalized,
+            target_type=target_type,
+            knowledge_level=knowledge_level,
+            results=results,
+            overall_verdict=overall,
         )
 
-    st.write(insight)
+    st.markdown(
+        insight
+    )
 
+    # --------------------------------------------------------
+    # Footer
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.caption(
+        "ThreatLens provides informational cybersecurity "
+        "analysis and does not guarantee that a target is safe."
+    )
+
+
+# ============================================================
+# Application Entry Point
+# ============================================================
 
 if __name__ == "__main__":
     main()
